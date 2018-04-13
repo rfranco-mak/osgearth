@@ -67,13 +67,18 @@ namespace
 
         void onLayerAdded(Layer* layer, unsigned index) {
             _node->onLayerAdded(layer, index);
-            // for backwards compat until we refactor ModelLayer to use Layer::getNode
-            MapCallback::onLayerAdded(layer, index);
         }
         void onLayerRemoved(Layer* layer, unsigned index) {
             _node->onLayerRemoved(layer, index);
-            // for backwards compat until we refactor ModelLayer to use Layer::getNode
-            MapCallback::onLayerRemoved(layer, index);
+        }
+        void onLayerMoved(Layer* layer, unsigned oldIndex, unsigned newIndex) {
+            _node->onLayerMoved(layer, oldIndex, newIndex);
+        }
+        void onLayerEnabled(Layer* layer) {
+            _node->onLayerAdded(layer, _node->getMap()->getIndexOfLayer(layer));
+        }
+        void onLayerDisabled(Layer* layer) {
+            _node->onLayerRemoved(layer, _node->getMap()->getIndexOfLayer(layer));
         }
 
         osg::observer_ptr<MapNode> _node;
@@ -334,9 +339,12 @@ MapNode::init()
 
     draping->reestablish( _terrainEngine );
     _overlayDecorator->addTechnique( draping );
+    _drapingManager = &draping->getDrapingManager();
 
     // install the Clamping technique for overlays:
-    _overlayDecorator->addTechnique( new ClampingTechnique() );
+    ClampingTechnique* clamping = new ClampingTechnique();
+    _overlayDecorator->addTechnique(clamping);
+    _clampingManager = &clamping->getClampingManager();
 
     _overlayDecorator->setTerrainEngine(_terrainEngine);
     _overlayDecorator->addChild(_terrainEngine);
@@ -355,6 +363,7 @@ MapNode::init()
 
 
     osg::StateSet* stateset = getOrCreateStateSet();
+    stateset->setName("MapNode");
 
     if ( _mapNodeOptions.enableLighting().isSet() )
     {
@@ -390,15 +399,17 @@ MapNode::init()
         }
     }
 
-    // VRV_PATCH, don't use OSG's GL material system
     // install a default material for everything in the map
-    osg::Material* defaultMaterial = new osg::Material();
+    osg::Material* defaultMaterial = new MaterialGL3();
     defaultMaterial->setDiffuse(defaultMaterial->FRONT, osg::Vec4(1,1,1,1));
     defaultMaterial->setAmbient(defaultMaterial->FRONT, osg::Vec4(1,1,1,1));
     stateset->setAttributeAndModes(defaultMaterial, 1);
-    //MaterialCallback().operator()(defaultMaterial, 0L);
+    MaterialCallback().operator()(defaultMaterial, 0L);
 
     dirtyBound();
+
+    // install a callback that sets the viewport size uniform:
+    this->addCullCallback(new InstallViewportSizeUniform());
 
     // register for event traversals so we can deal with blacklisted filenames
     ADJUST_EVENT_TRAV_COUNT( this, 1 );
@@ -409,8 +420,10 @@ MapNode::init()
 
 MapNode::~MapNode()
 {
+    // Remove this node's map callback first:
     _map->removeMapCallback( _mapCallback.get() );
 
+    // Then invoke "removed" on all the layers in a batch.
     _mapCallback->invokeOnLayerRemoved(_map.get());
 
     this->clearExtensions();
@@ -428,8 +441,6 @@ MapNode::getConfig() const
     Config mapConf("map");
     mapConf.set("version", "2");
 
-    MapFrame mapf( _map.get() );
-
     // the map and node options:
     Config optionsConf = _map->getInitialMapOptions().getConfig();
     optionsConf.merge( getMapNodeOptions().getConfig() );
@@ -437,7 +448,7 @@ MapNode::getConfig() const
 
     // the layers
     LayerVector layers;
-    mapf.getLayers(layers);
+    _map->getLayers(layers);
 
     for (LayerVector::const_iterator i = layers.begin(); i != layers.end(); ++i)
     {
@@ -618,6 +629,33 @@ MapNode::isGeocentric() const
     return _map->isGeocentric();
 }
 
+namespace
+{
+    void rebuildLayerNodes(const Map* map, osg::Group* layerNodes)
+    {
+        layerNodes->removeChildren(0, layerNodes->getNumChildren());
+
+        LayerVector layers;
+        map->getLayers(layers);
+        for (LayerVector::iterator i = layers.begin(); i != layers.end(); ++i)
+        {
+            Layer* layer = i->get();
+            if (layer->getEnabled())
+            {
+                osg::Node* node = layer->getOrCreateNode();
+                if (node)
+                {
+                    osg::Group* container = new osg::Group();
+                    container->setName(layer->getName());
+                    container->addChild(node);
+                    container->setStateSet(layer->getStateSet());
+                    layerNodes->addChild(container);
+                }
+            }
+        }
+    }
+}
+
 void
 MapNode::onLayerAdded(Layer* layer, unsigned index)
 {
@@ -627,15 +665,8 @@ MapNode::onLayerAdded(Layer* layer, unsigned index)
     // Communicate terrain resources to the layer:
     layer->setTerrainResources(getTerrainEngine()->getResources());
 
-    // Compatibility, until we refactor things.
-    ModelLayer* modelLayer = dynamic_cast<ModelLayer*>(layer);
-    if (modelLayer)
-    {
-        // TODO:  Why go through all the MapNodeObserver stuff when we can just pass in the MapNode here?
-        modelLayer->getOrCreateSceneGraph(_map.get(), _map->getReadOptions(), 0L);
-        // Install the MapNodeObserverInstaller so that MapNodeObservers will be notified of the MapNode.
-        modelLayer->getSceneGraphCallbacks()->add(new MapNodeObserverInstaller(this));
-    }
+    // Each layer gets a callback to change the MapNode if necessary
+    layer->getSceneGraphCallbacks()->add(new MapNodeObserverInstaller(this));
 
     // Create the layer's node, if it has one:
     osg::Node* node = layer->getOrCreateNode();
@@ -646,92 +677,47 @@ MapNode::onLayerAdded(Layer* layer, unsigned index)
         // notify before adding it to the graph:
         layer->getSceneGraphCallbacks()->firePreMergeNode(node);
 
-        // Call setMapNode on any MapNodeObservers on this initial creation.
-        MapNodeReplacer replacer( this );
-        node->accept( replacer );
-
-        // encase the layer's node in a container that will hold its state set:
-        osg::Group* nodeContainer = new osg::Group();
-        nodeContainer->setName(layer->getName());
-        nodeContainer->setStateSet(layer->getOrCreateStateSet());
-        nodeContainer->addChild( node );
-        _layerNodes->addChild( nodeContainer );
+        // update the layer-to-node table (adds the node to the graph)
+        rebuildLayerNodes(_map.get(), _layerNodes);
 
         // after putting it in the graph:
         layer->getSceneGraphCallbacks()->firePostMergeNode(node);
-
-        // TODO: move this logic into ModelLayer (or Layer)?
-        if (modelLayer)
-        {
-            ModelSource* ms = modelLayer->getModelSource();
-            if (ms)
-            {
-                // enfore a rendering bin if necessary:
-                if (ms->getOptions().renderOrder().isSet())
-                {
-                    osg::StateSet* mss = node->getOrCreateStateSet();
-                    mss->setRenderBinDetails(
-                        ms->getOptions().renderOrder().value(),
-                        mss->getBinName().empty() ? "DepthSortedBin" : mss->getBinName());
-                }
-                if (ms->getOptions().renderBin().isSet())
-                {
-                    osg::StateSet* mss = node->getOrCreateStateSet();
-                    mss->setRenderBinDetails(
-                        mss->getBinNumber(),
-                        ms->getOptions().renderBin().get());
-                }
-            }
-        }
-
-        //// If this is a visible layer, we have to re-initialize the visibility
-        //// after calling getOrCreateNode.
-        //VisibleLayer* VL = dynamic_cast<VisibleLayer*>(layer);
-        //if (VL)
-        //    VL->setVisible(VL->getVisible());
     }
 }
 
 void
 MapNode::onLayerRemoved(Layer* layer, unsigned index)
 {
-    if (layer == 0L)
-        return;
-
-    osg::Node* node = layer->getOrCreateNode();
-    if (node == 0L)
-        return;
-
-    for (unsigned i = 0; i < _layerNodes->getNumChildren(); ++i)
+    if (layer)
     {
-        osg::Group* g = _layerNodes->getChild(i)->asGroup();
-        if (g && g->getNumChildren() > 0 && g->getChild(0) == node)
+        osg::Node* node = layer->getOrCreateNode();
+        if (node)
         {
-            _layerNodes->removeChild(i);
-            break;
+            layer->getSceneGraphCallbacks()->fireRemoveNode(node);
+            rebuildLayerNodes(_map.get(), _layerNodes);
         }
     }
 }
 
-
-namespace
+void
+MapNode::onLayerMoved(Layer* layer, unsigned oldIndex, unsigned newIndex)
 {
-    struct MaskNodeFinder : public osg::NodeVisitor {
-        MaskNodeFinder() : osg::NodeVisitor( osg::NodeVisitor::TRAVERSE_ALL_CHILDREN ) { }
-        void apply( osg::Group& group ) {
-            if ( dynamic_cast<MaskNode*>( &group ) ) {
-                _groups.push_back( &group );
-            }
-            traverse(group);
-        }
-        std::list< osg::Group* > _groups;
-    };
+    if (layer && layer->getOrCreateNode())
+    {
+        rebuildLayerNodes(_map.get(), _layerNodes);
+    }
 }
 
-namespace
+void
+MapNode::openMapLayers()
 {
-    template<typename T> void tryOpenLayer(T* layer)
+    LayerVector layers;
+    _map->getLayers(layers);
+
+    for (LayerVector::const_iterator i = layers.begin(); i != layers.end(); ++i)
     {
+        Layer* layer = i->get();
+
         if (!layer->getStatus().isError())
         {
             const Status& status = layer->open();
@@ -740,19 +726,6 @@ namespace
                 OE_WARN << LC << "Failed to open layer \"" << layer->getName() << "\" ... " << status.message() << std::endl;
             }
         }
-    }
-}
-
-void
-MapNode::openMapLayers()
-{
-    MapFrame frame(_map.get());
-
-    for (LayerVector::const_iterator i = frame.layers().begin();
-        i != frame.layers().end();
-        ++i)
-    {
-        tryOpenLayer(i->get());
     }
 }
 
@@ -779,4 +752,46 @@ MapNode::traverse( osg::NodeVisitor& nv )
         if (dynamic_cast<osgUtil::BaseOptimizerVisitor*>(&nv) == 0L)
             osg::Group::traverse( nv );
     }
+}
+
+void
+MapNode::resizeGLObjectBuffers(unsigned maxSize)
+{
+    osg::Group::resizeGLObjectBuffers(maxSize);
+
+    LayerVector layers;
+    getMap()->getLayers(layers);
+    for (LayerVector::const_iterator i = layers.begin(); i != layers.end(); ++i)
+    {
+        if ((*i)->getStateSet()) {
+            (*i)->getStateSet()->resizeGLObjectBuffers(maxSize);
+        }
+    }
+}
+
+void
+MapNode::releaseGLObjects(osg::State* state) const
+{
+    osg::Group::releaseGLObjects(state);
+
+    LayerVector layers;
+    getMap()->getLayers(layers);
+    for (LayerVector::const_iterator i = layers.begin(); i != layers.end(); ++i)
+    {
+        if ((*i)->getStateSet()) {
+            (*i)->getStateSet()->releaseGLObjects(state);
+        }
+    }
+}
+
+DrapingManager*
+MapNode::getDrapingManager()
+{
+    return _drapingManager;
+}
+
+ClampingManager*
+MapNode::getClampingManager()
+{
+    return _clampingManager;
 }

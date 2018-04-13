@@ -64,9 +64,7 @@ namespace osgEarth
 //------------------------------------------------------------------------
 
 
-TerrainEngineNode::ImageLayerController::ImageLayerController(const Map*         map,
-                                                              TerrainEngineNode* engine) :
-_mapf  ( map ),
+TerrainEngineNode::ImageLayerController::ImageLayerController(TerrainEngineNode* engine) :
 _engine( engine )
 {    
     //nop
@@ -141,9 +139,8 @@ TerrainEngineNode::~TerrainEngineNode()
     //Remove any callbacks added to the image layers
     if (_map.valid())
     {
-        MapFrame mapf( _map.get() );        
         ImageLayerVector imageLayers;
-        mapf.getLayers(imageLayers);
+        _map->getLayers(imageLayers);
 
         for( ImageLayerVector::const_iterator i = imageLayers.begin(); i != imageLayers.end(); ++i )
         {
@@ -201,7 +198,7 @@ TerrainEngineNode::setMap(const Map* map, const TerrainOptions& options)
     
     // Create a terrain utility interface. This interface can be used
     // to query the in-memory terrain graph, subscribe to tile events, etc.
-    _terrainInterface = new Terrain( this, map->getProfile(), map->isGeocentric(), options );
+    _terrainInterface = new Terrain( this, map->getProfile(), options );
 
     // Set up the CSN values. We support this because some manipulators look for it,
     // but osgEarth itself doesn't use it.
@@ -232,17 +229,15 @@ TerrainEngineNode::setMap(const Map* map, const TerrainOptions& options)
 
     // Manually trigger the map callbacks the first time:
     if (_map->getProfile())
-        onMapInfoEstablished(MapInfo(_map));
+        onMapInfoEstablished(MapInfo(_map.get()));
 
     // Create a layer controller. This object affects the uniforms
     // that control layer appearance properties
-    _imageLayerController = new ImageLayerController(_map, this);
+    _imageLayerController = new ImageLayerController(this);
 
     // register the layer Controller it with all pre-existing image layers:
-    MapFrame mapf(_map);
     ImageLayerVector imageLayers;
-    mapf.getLayers(imageLayers);
-
+    _map->getLayers(imageLayers);
     for (ImageLayerVector::const_iterator i = imageLayers.begin(); i != imageLayers.end(); ++i)
     {
         i->get()->addCallback(_imageLayerController.get());
@@ -266,13 +261,6 @@ TerrainEngineNode::computeBound() const
     {
         return osg::CoordinateSystemNode::computeBound();
     }
-}
-
-void
-TerrainEngineNode::setVerticalScale( float value )
-{
-    _verticalScale = value;
-    onVerticalScaleChanged();
 }
 
 void
@@ -310,17 +298,16 @@ TerrainEngineNode::onMapModelChanged( const MapModelChange& change )
 }
 
 TerrainTileModel*
-TerrainEngineNode::createTileModel(const MapFrame&              frame,
+TerrainEngineNode::createTileModel(const Map*                   map,
                                    const TileKey&               key,
                                    const CreateTileModelFilter& filter,
-                                   ProgressCallback*            progress
-    )
+                                   ProgressCallback*            progress)
 {
     TerrainEngineRequirements* requirements = this;
 
     // Ask the factory to create a new tile model:
     osg::ref_ptr<TerrainTileModel> model = _tileModelFactory->createTileModel(
-        frame, 
+        map, 
         key, 
         filter,
         requirements,         
@@ -405,18 +392,6 @@ TerrainEngineNode::notifyOfTerrainTileNodeCreation(const TileKey& key, osg::Node
     }
 }
 
-void
-TerrainEngineNode::addTilePatchCallback(TilePatchCallback* cb)
-{
-    _tilePatchCallbacks.push_back( cb );
-}
-
-void
-TerrainEngineNode::removeTilePatchCallback(TilePatchCallback* cb)
-{
-    std::remove(_tilePatchCallbacks.begin(), _tilePatchCallbacks.end(), cb);
-}
-
 ComputeRangeCallback*
 TerrainEngineNode::getComputeRangeCallback() const
 {
@@ -438,7 +413,7 @@ TerrainEngineNode::setComputeRangeCallback(ComputeRangeCallback* computeRangeCal
 TerrainEngineNode*
 TerrainEngineNodeFactory::create(const TerrainOptions& options )
 {
-    TerrainEngineNode* result = 0L;
+    osg::ref_ptr<TerrainEngineNode> node;
 
     std::string driver =
         Registry::instance()->overrideTerrainEngineDriverName().getOrUse(options.getDriver());
@@ -447,12 +422,13 @@ TerrainEngineNodeFactory::create(const TerrainOptions& options )
         driver = Registry::instance()->getDefaultTerrainEngineDriverName();
 
     std::string driverExt = std::string( ".osgearth_engine_" ) + driver;
-    result = dynamic_cast<TerrainEngineNode*>( osgDB::readObjectFile( driverExt ) );
-    if ( !result )
+    osg::ref_ptr<osg::Object> object = osgDB::readRefObjectFile( driverExt );
+    node = dynamic_cast<TerrainEngineNode*>( object.release() );
+    if ( !node )
     {
         OE_WARN << "WARNING: Failed to load terrain engine driver for \"" << driver << "\"" << std::endl;
     }
 
-    return result;
+    return node.release();
 }
 

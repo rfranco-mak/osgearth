@@ -19,7 +19,6 @@
 #include "TerrainCuller"
 #include "TileNode"
 #include "SurfaceNode"
-#include "SelectionInfo"
 
 #define LC "[TerrainCuller] "
 
@@ -27,13 +26,11 @@ using namespace osgEarth::Drivers::RexTerrainEngine;
 
 
 TerrainCuller::TerrainCuller(osgUtil::CullVisitor* cullVisitor, EngineContext* context) :
-_frame(0L),
 _camera(0L),
 _currentTileNode(0L),
 _orphanedPassesDetected(0u),
 _cv(cullVisitor),
-_context(context),
-_numberChildrenCreated(0)
+_context(context)
 {
     setVisitorType(CULL_VISITOR);
     setTraversalMode(TRAVERSE_ALL_CHILDREN);
@@ -45,40 +42,22 @@ _numberChildrenCreated(0)
     pushViewport(_cv->getViewport());
     pushProjectionMatrix(_cv->getProjectionMatrix());
     pushModelViewMatrix(_cv->getModelViewMatrix(), _cv->getCurrentCamera()->getReferenceFrame());
-    setLODScale(_cv->getLODScale());
     _camera = _cv->getCurrentCamera();
-    _rangeScale = 1.0f;
 }
 
 void
-TerrainCuller::setup(const MapFrame& frame, LayerExtentVector& layerExtents, const RenderBindings& bindings, const SelectionInfo& si)
+TerrainCuller::setup(const Map* map, LayerExtentVector& layerExtents, const RenderBindings& bindings)
 {
     unsigned frameNum = getFrameStamp() ? getFrameStamp()->getFrameNumber() : 0u;
     _layerExtents = &layerExtents;
-    _terrain.setup(frame, bindings, frameNum, _cv);
-    _rangeScale = si.computeRangeScale(this);
+    _terrain.setup(map, bindings, frameNum, _cv);
 }
 
 float
 TerrainCuller::getDistanceToViewPoint(const osg::Vec3& pos, bool withLODScale) const
 {
-   //VRV PATCH
-   //Temporary work around to check for ortho graphic cameras and not use the custom getDistanceToViewPoint call.
-   // we need to figure out if there is a better way to do this.
-   // It is needed because the VRV getDistanceToViewPoint function returns a value that is the estimated altitude instead of the distance based on the pos
-   double l, r, t, b, n, f;
-   if (_camera &&
-      (_camera->getProjectionMatrixAsOrtho(l, r, b, t, n, f) == false))
-   {
-      // pass through, in case developer has overridden the method in the prototype CV
-      return _cv->getDistanceToViewPoint(pos, withLODScale);
-   }
-   else
-   {
-      if (withLODScale) return (pos - getViewPointLocal()).length()*getLODScale();
-      else return (pos - getViewPointLocal()).length();
-   }
-   //End VRV PATCH
+    if (withLODScale) return (pos-getViewPointLocal()).length()*getLODScale();
+    else return (pos-getViewPointLocal()).length();
 }
 
 DrawTileCommand*
@@ -201,28 +180,25 @@ TerrainCuller::apply(osg::Node& node)
                 if (layer->getAcceptCallback() == 0L ||
                     layer->getAcceptCallback()->acceptKey(_currentTileNode->getKey()))
                 {
-                   if (tileNode->getSurfaceNode())
-                   {
-                      // Push this tile's matrix if we haven't already done so:
-                      if (!pushedMatrix)
-                      {
-                         SurfaceNode* surface = tileNode->getSurfaceNode();
+                    // Push this tile's matrix if we haven't already done so:
+                    if (!pushedMatrix)
+                    {
+                        SurfaceNode* surface = tileNode->getSurfaceNode();
 
-                         // push the surface matrix:
-                         osg::Matrix mvm = *getModelViewMatrix();
-                         surface->computeLocalToWorldMatrix(mvm, this);
-                         pushModelViewMatrix(createOrReuseMatrix(mvm), surface->getReferenceFrame());
-                         pushedMatrix = true;
-                      }
+                        // push the surface matrix:
+                        osg::Matrix mvm = *getModelViewMatrix();
+                        surface->computeLocalToWorldMatrix(mvm, this);
+                        pushModelViewMatrix(createOrReuseMatrix(mvm), surface->getReferenceFrame());
+                        pushedMatrix = true;
+                    }
 
-                      // Add the draw command:
-                      DrawTileCommand* cmd = addDrawCommand(layer->getUID(), &renderModel, 0L, tileNode);
-                      if (cmd)
-                      {
-                         cmd->_drawPatch = true;
-                         cmd->_drawCallback = layer->getDrawCallback();
-                      }
-                   }
+                    // Add the draw command:
+                    DrawTileCommand* cmd = addDrawCommand(layer->getUID(), &renderModel, 0L, tileNode);
+                    if (cmd)
+                    {
+                        cmd->_drawPatch = true;
+                        cmd->_drawCallback = layer->getDrawCallback();
+                    }
                 }
             }
 
