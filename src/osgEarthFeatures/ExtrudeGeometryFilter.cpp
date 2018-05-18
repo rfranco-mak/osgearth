@@ -1207,11 +1207,11 @@ ExtrudeGeometryFilter::push( FeatureList& input, FilterContext& context )
     osg::ref_ptr<osg::Group> oqn;
     if (osgEarth::OcclusionQueryNodeFactory::_occlusionFactory) {
        oqn = osgEarth::OcclusionQueryNodeFactory::_occlusionFactory->createQueryNode();
+       group->addChild(oqn);
     }
     if (!oqn.get()) {
        oqn = group;
     }
-    group->addChild(oqn);
 
     // add all the geodes
     for( SortedGeodeMap::iterator i = _geodes.begin(); i != _geodes.end(); ++i )
