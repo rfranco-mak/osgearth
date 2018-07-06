@@ -440,10 +440,13 @@ TileNode::cull(TerrainCuller* culler)
             if ( !_childrenReady )
             {
                 OE_START_TIMER(createChildren);
+                int initialNumChildren = _children.size();
                 createChildren( context );
-                culler->_numberChildrenCreated += 4;
+                culler->_numberChildrenCreated += (_children.size() - initialNumChildren);
                 REPORT("TileNode::createChildren", createChildren);
+
                 if (_children.size() == 4) {
+                   // completely loaded
                    _childrenReady = true;
                 }
                 // This means that you cannot start loading data immediately; must wait a frame.
@@ -573,7 +576,7 @@ TileNode::traverse(osg::NodeVisitor& nv)
 void
 TileNode::createChildren(EngineContext* context)
 {
-    // NOTE: Ensure that _mutex is locked before calling this fucntion!
+    // NOTE: Ensure that _mutex is locked before calling this function!
     //OE_WARN << "Creating children for " << _key.str() << std::endl;
 
     // Create up to  four child nodes with a 2 ms timer
