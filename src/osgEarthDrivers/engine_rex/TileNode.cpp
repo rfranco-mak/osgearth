@@ -443,8 +443,9 @@ TileNode::cull(TerrainCuller* culler)
                 createChildren( context );
                 culler->_numberChildrenCreated += 4;
                 REPORT("TileNode::createChildren", createChildren);
-                _childrenReady = true;
-
+                if (_children.size() == 4) {
+                   _childrenReady = true;
+                }
                 // This means that you cannot start loading data immediately; must wait a frame.
                 canLoadData = false;
             }
@@ -575,8 +576,11 @@ TileNode::createChildren(EngineContext* context)
     // NOTE: Ensure that _mutex is locked before calling this fucntion!
     //OE_WARN << "Creating children for " << _key.str() << std::endl;
 
-    // Create the four child nodes.
-    for(unsigned quadrant=0; quadrant<4; ++quadrant)
+    // Create up to  four child nodes with a 2 ms timer
+   
+    osg::ElapsedTime timer;
+    
+    for(unsigned int quadrant= _children.size(); quadrant<4; ++quadrant)
     {
         TileNode* node = new TileNode();
         if (context->getOptions().minExpiryFrames().isSet())
@@ -593,6 +597,12 @@ TileNode::createChildren(EngineContext* context)
 
         // Add to the scene graph.
         addChild( node );
+        // 2 ms limit on tile splits
+        if (timer.elapsedTime_m() > 2.0 && quadrant != 3) {
+           //osg::CVMarkerSeries series("Culling SubTasks");
+           //series.write_alert("hit budget, %f", timer.elapsedTime_m());
+           break;
+        }
     }
 }
 
