@@ -19,6 +19,7 @@
 #include "TerrainCuller"
 #include "TileNode"
 #include "SurfaceNode"
+#include "SelectionInfo"
 
 #define LC "[TerrainCuller] "
 
@@ -44,22 +45,40 @@ _numberChildrenCreated(0)
     pushViewport(_cv->getViewport());
     pushProjectionMatrix(_cv->getProjectionMatrix());
     pushModelViewMatrix(_cv->getModelViewMatrix(), _cv->getCurrentCamera()->getReferenceFrame());
+    setLODScale(_cv->getLODScale());
     _camera = _cv->getCurrentCamera();
+    _rangeScale = 1.0f;
 }
 
 void
-TerrainCuller::setup(const MapFrame& frame, LayerExtentVector& layerExtents, const RenderBindings& bindings)
+TerrainCuller::setup(const MapFrame& frame, LayerExtentVector& layerExtents, const RenderBindings& bindings, const SelectionInfo& si)
 {
     unsigned frameNum = getFrameStamp() ? getFrameStamp()->getFrameNumber() : 0u;
     _layerExtents = &layerExtents;
     _terrain.setup(frame, bindings, frameNum, _cv);
+    _rangeScale = si.computeRangeScale(this);
 }
 
 float
 TerrainCuller::getDistanceToViewPoint(const osg::Vec3& pos, bool withLODScale) const
 {
+   //VRV PATCH
+   //Temporary work around to check for ortho graphic cameras and not use the custom getDistanceToViewPoint call.
+   // we need to figure out if there is a better way to do this.
+   // It is needed because the VRV getDistanceToViewPoint function returns a value that is the estimated altitude instead of the distance based on the pos
+   double l, r, t, b, n, f;
+   if (_camera &&
+      (_camera->getProjectionMatrixAsOrtho(l, r, b, t, n, f) == false))
+   {
+      // pass through, in case developer has overridden the method in the prototype CV
+      return _cv->getDistanceToViewPoint(pos, withLODScale);
+   }
+   else
+   {
     if (withLODScale) return (pos-getViewPointLocal()).length()*getLODScale();
     else return (pos-getViewPointLocal()).length();
+   }
+   //End VRV PATCH
 }
 
 DrawTileCommand*

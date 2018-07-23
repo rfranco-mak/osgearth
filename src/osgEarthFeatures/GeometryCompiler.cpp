@@ -594,7 +594,7 @@ GeometryCompiler::compile(FeatureList&          workingSet,
 
     if ( _options.optimize() == true )
     {
-        std::cout << LC << "optimize begin" << std::endl;
+        OE_DEBUG << LC << "optimize begin" << std::endl;
 
         // Run the optimizer on the resulting graph
         int optimizations =
@@ -614,7 +614,7 @@ GeometryCompiler::compile(FeatureList&          workingSet,
         mg.setTargetMaximumNumberOfVertices(65536);
         resultGroup->accept(mg);
 
-        std::cout << LC << "optimize complete" << std::endl;
+        OE_DEBUG << LC << "optimize complete" << std::endl;
 
         if ( trackHistory ) history.push_back( "optimize" );
     }

@@ -20,7 +20,6 @@
 * along with this program.  If not, see <http://www.gnu.org/licenses/>
 */
 #include <osgEarth/SceneGraphCallback>
-#include <iostream>
 
 using namespace osgEarth;
 
@@ -62,7 +61,6 @@ SceneGraphCallbacks::remove(SceneGraphCallback* cb)
 void
 SceneGraphCallbacks::firePreMergeNode(osg::Node* node)
 {
-   //std::cout << "SceneGraphCallbacks::firePreMergeNode" << std::endl;
     Threading::ScopedMutexLock lock(_mutex);
     osg::ref_ptr<osg::Object> sender;
     _sender.lock(sender);
